@@ -28,6 +28,7 @@ Lancement local :
 
 import logging
 import os
+import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -73,6 +74,20 @@ def est_bouton_piqure_rapide(texte: str) -> bool:
 def formater_resultat(emoji: str, heure_depart: datetime) -> str:
     heure_fin = heure_depart + timedelta(hours=DELTA_HEURES)
     return f"- {emoji} : {heure_depart.strftime('%Hh%M')} → {heure_fin.strftime('%Hh%M')}"
+
+
+REGEX_HEURE = re.compile(r"^(\d{1,2})[h:]?(\d{2})$")
+
+
+def parser_heure(texte: str):
+    """Accepte 10h46, 10:46 ou 1046. Renvoie (heure, minute) ou None si invalide."""
+    match = REGEX_HEURE.match(texte.strip())
+    if not match:
+        return None
+    heure, minute = int(match.group(1)), int(match.group(2))
+    if 0 <= heure <= 23 and 0 <= minute <= 59:
+        return heure, minute
+    return None
 
 
 async def supprimer_silencieux(message):
@@ -130,13 +145,12 @@ async def gerer_choix_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["message_id"] = query.message.message_id
     context.user_data["chat_id"] = query.message.chat_id
 
-    await query.edit_message_text("Écris l'heure (0-23) :")
+    await query.edit_message_text("À quelle heure ? (ex : 10h46, 10:46 ou 1046)")
 
 
 async def gerer_saisie_heure_minute(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Traite le texte tapé pendant l'étape heure/minute de Perso."""
+    """Traite le texte tapé pour l'heure pendant le flux Perso."""
     texte = update.message.text.strip()
-    etape = context.user_data.get("etape")
     chat_id = context.user_data.get("chat_id", update.effective_chat.id)
     message_id = context.user_data.get("message_id")
 
@@ -145,48 +159,30 @@ async def gerer_saisie_heure_minute(update: Update, context: ContextTypes.DEFAUL
     if message_id is None:
         return
 
-    if etape == "attente_heure":
-        if texte.isdigit() and 0 <= int(texte) <= 23:
-            context.user_data["heure"] = int(texte)
-            context.user_data["etape"] = "attente_minute"
-            await context.bot.edit_message_text(
-                chat_id=chat_id, message_id=message_id, text="Écris les minutes (0-59) :"
-            )
-        else:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text="Heure invalide. Écris un nombre entre 0 et 23 :",
-            )
+    resultat_heure = parser_heure(texte)
+    if resultat_heure is None:
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text="Format non reconnu. Écris par exemple 10h46, 10:46 ou 1046 :",
+        )
         return
 
-    if etape == "attente_minute":
-        if texte.isdigit() and 0 <= int(texte) <= 59:
-            minute = int(texte)
-            heure = context.user_data.get("heure", 0)
-            emoji = context.user_data.get("emoji", "💉")
-            heure_depart = datetime.now(FUSEAU_PARIS).replace(
-                hour=heure, minute=minute, second=0, microsecond=0
-            )
-            resultat = formater_resultat(emoji, heure_depart)
-            await context.bot.edit_message_text(
-                chat_id=chat_id, message_id=message_id, text=resultat
-            )
-            context.user_data.clear()
-        else:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text="Minutes invalides. Écris un nombre entre 0 et 59 :",
-            )
-        return
+    heure, minute = resultat_heure
+    emoji = context.user_data.get("emoji", "💉")
+    heure_depart = datetime.now(FUSEAU_PARIS).replace(
+        hour=heure, minute=minute, second=0, microsecond=0
+    )
+    resultat = formater_resultat(emoji, heure_depart)
+    await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=resultat)
+    context.user_data.clear()
 
 
 # --- Répartiteur de texte --------------------------------------------------
 
 async def gerer_texte(update: Update, context: ContextTypes.DEFAULT_TYPE):
     etape = context.user_data.get("etape")
-    if etape in ("attente_heure", "attente_minute"):
+    if etape == "attente_heure":
         await gerer_saisie_heure_minute(update, context)
         return
 
