@@ -1,18 +1,22 @@
 """
 Bot Telegram - Suivi des piqûres
 
-Commandes :
-- Piqûre 1, Piqûre 2, Piqûre 3, Piqûre 4 → envoie immédiatement
-  💉 x N : heure actuelle → heure actuelle + 12h
-- Perso → demande le nombre de piqûres puis l'heure exacte,
-  et calcule heure saisie → heure saisie + 12h
+Fonctionnement :
+- /piqure1, /piqure2, /piqure3, /piqure4 → envoie immédiatement
+  une seule ligne : "- 💉💉 : 09h49 → 21h49" (heure de Paris, + 12h)
+- /perso → choix du nombre de piqûres (boutons), puis réglage de
+  l'heure avec une horloge à flèches ▲▼, puis validation.
+
+Ces 5 options apparaissent dans le menu natif de Telegram
+(icône à côté du trombone) une fois configurées dans BotFather
+(voir instructions fournies à côté de ce fichier).
 
 Installation :
     pip install python-telegram-bot --upgrade
 
 Configuration :
-    Le token (donné par @BotFather sur Telegram) doit être défini
-    dans une variable d'environnement BOT_TOKEN.
+    Le token (donné par @BotFather) doit être dans la variable
+    d'environnement BOT_TOKEN.
 
 Lancement local :
     BOT_TOKEN="ton_token" python bot_piqures.py
@@ -21,127 +25,131 @@ Lancement local :
 import logging
 import os
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
-from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     CommandHandler,
-    MessageHandler,
-    ConversationHandler,
+    CallbackQueryHandler,
     ContextTypes,
-    filters,
 )
 
-# --- Configuration ---------------------------------------------------------
+# --- Configuration -----------------------------------------------------
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-
-DELTA_HEURES = 12  # nombre d'heures ajoutées après la piqûre
+DELTA_HEURES = 12
+FUSEAU_PARIS = ZoneInfo("Europe/Paris")  # gère automatiquement été/hiver
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 
-# États de la conversation "Perso"
-CHOIX_NOMBRE, CHOIX_HEURE = range(2)
 
-MENU_PRINCIPAL = [
-    ["Piqûre 1", "Piqûre 2"],
-    ["Piqûre 3", "Piqûre 4"],
-    ["Perso"],
-]
+def formater_resultat(emoji: str, heure_depart: datetime) -> str:
+    heure_fin = heure_depart + timedelta(hours=DELTA_HEURES)
+    return f"- {emoji} : {heure_depart.strftime('%Hh%M')} → {heure_fin.strftime('%Hh%M')}"
 
 
-# --- Commandes simples -------------------------------------------------
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    reply_markup = ReplyKeyboardMarkup(MENU_PRINCIPAL, resize_keyboard=True)
-    await update.message.reply_text("Choisis une option :", reply_markup=reply_markup)
-
+# --- /piqure1 à /piqure4 : une seule ligne envoyée ----------------------
 
 async def piqure_rapide(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Gère les boutons Piqûre 1 à Piqûre 4."""
-    texte = update.message.text
-    n = int(texte.split()[-1])
+    # Enlève un éventuel "@NomDuBot" ajouté par Telegram dans les groupes
+    commande = update.message.text.split("@")[0]
+    n = int(commande[-1])
     emoji = "💉" * n
-
-    maintenant = datetime.now()
-    plus_tard = maintenant + timedelta(hours=DELTA_HEURES)
-
-    message = f"{emoji} : {maintenant.strftime('%H:%M')} → {plus_tard.strftime('%H:%M')}"
-    await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(MENU_PRINCIPAL, resize_keyboard=True))
+    maintenant = datetime.now(FUSEAU_PARIS)
+    await update.message.reply_text(formater_resultat(emoji, maintenant))
 
 
-# --- Conversation "Perso" -----------------------------------------------
+# --- /perso : nombre de piqûres puis horloge à flèches -------------------
 
 async def perso_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    clavier = [["💉", "💉💉"], ["💉💉💉", "💉💉💉💉"]]
-    reply_markup = ReplyKeyboardMarkup(clavier, resize_keyboard=True, one_time_keyboard=True)
-    await update.message.reply_text("Combien de piqûres ?", reply_markup=reply_markup)
-    return CHOIX_NOMBRE
+    clavier = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💉", callback_data="n_1"),
+         InlineKeyboardButton("💉💉", callback_data="n_2")],
+        [InlineKeyboardButton("💉💉💉", callback_data="n_3"),
+         InlineKeyboardButton("💉💉💉💉", callback_data="n_4")],
+    ])
+    await update.message.reply_text("Combien de piqûres ?", reply_markup=clavier)
 
 
-async def perso_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["emoji"] = update.message.text.strip()
-    await update.message.reply_text(
-        "À quelle heure ? (format HH:MM, ex : 07:13)",
-        reply_markup=ReplyKeyboardRemove(),
-    )
-    return CHOIX_HEURE
+def clavier_horloge(heure: int, minute: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("▲", callback_data="h_plus"),
+         InlineKeyboardButton("▲", callback_data="m_plus")],
+        [InlineKeyboardButton(f"{heure:02d}", callback_data="noop"),
+         InlineKeyboardButton(f"{minute:02d}", callback_data="noop")],
+        [InlineKeyboardButton("▼", callback_data="h_moins"),
+         InlineKeyboardButton("▼", callback_data="m_moins")],
+        [InlineKeyboardButton("✅ Valider", callback_data="valider")],
+    ])
 
 
-async def perso_heure(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    texte = update.message.text.strip().replace("h", ":")
-    try:
-        heure, minute = map(int, texte.split(":"))
-        heure_saisie = datetime.now().replace(
+async def gerer_boutons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+    await query.answer()
+
+    if data.startswith("n_"):
+        n = int(data.split("_")[1])
+        context.user_data["emoji"] = "💉" * n
+        maintenant = datetime.now(FUSEAU_PARIS)
+        context.user_data["heure"] = maintenant.hour
+        context.user_data["minute"] = maintenant.minute
+        await query.edit_message_text(
+            "Choisis l'heure :",
+            reply_markup=clavier_horloge(maintenant.hour, maintenant.minute),
+        )
+        return
+
+    if data == "noop":
+        return
+
+    if data in ("h_plus", "h_moins", "m_plus", "m_moins"):
+        heure = context.user_data.get("heure", 0)
+        minute = context.user_data.get("minute", 0)
+        if data == "h_plus":
+            heure = (heure + 1) % 24
+        elif data == "h_moins":
+            heure = (heure - 1) % 24
+        elif data == "m_plus":
+            minute = (minute + 1) % 60
+        elif data == "m_moins":
+            minute = (minute - 1) % 60
+        context.user_data["heure"] = heure
+        context.user_data["minute"] = minute
+        await query.edit_message_text(
+            "Choisis l'heure :", reply_markup=clavier_horloge(heure, minute)
+        )
+        return
+
+    if data == "valider":
+        emoji = context.user_data.get("emoji", "💉")
+        heure = context.user_data.get("heure", 0)
+        minute = context.user_data.get("minute", 0)
+        heure_depart = datetime.now(FUSEAU_PARIS).replace(
             hour=heure, minute=minute, second=0, microsecond=0
         )
-    except (ValueError, IndexError):
-        await update.message.reply_text(
-            "Format invalide, réessaie avec HH:MM (ex : 07:13)."
-        )
-        return CHOIX_HEURE
-
-    plus_tard = heure_saisie + timedelta(hours=DELTA_HEURES)
-    emoji = context.user_data.get("emoji", "💉")
-
-    message = f"{emoji} : {heure_saisie.strftime('%H:%M')} → {plus_tard.strftime('%H:%M')}"
-    await update.message.reply_text(
-        message, reply_markup=ReplyKeyboardMarkup(MENU_PRINCIPAL, resize_keyboard=True)
-    )
-    return ConversationHandler.END
+        await query.edit_message_text(formater_resultat(emoji, heure_depart))
+        return
 
 
-async def annuler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Annulé.", reply_markup=ReplyKeyboardMarkup(MENU_PRINCIPAL, resize_keyboard=True)
-    )
-    return ConversationHandler.END
-
-
-# --- Lancement du bot ----------------------------------------------------
+# --- Lancement -----------------------------------------------------------
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-
-    conv_perso = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^Perso$"), perso_start)],
-        states={
-            CHOIX_NOMBRE: [MessageHandler(filters.Regex("^💉+$"), perso_nombre)],
-            CHOIX_HEURE: [MessageHandler(filters.TEXT & ~filters.COMMAND, perso_heure)],
-        },
-        fallbacks=[CommandHandler("cancel", annuler)],
-    )
-    app.add_handler(conv_perso)
-
-    app.add_handler(MessageHandler(filters.Regex("^Piqûre [1-4]$"), piqure_rapide))
+    app.add_handler(CommandHandler(
+        ["piqure1", "piqure2", "piqure3", "piqure4"], piqure_rapide
+    ))
+    app.add_handler(CommandHandler("perso", perso_start))
+    app.add_handler(CallbackQueryHandler(gerer_boutons))
 
     app.run_polling()
 
 
 if __name__ == "__main__":
     main()
+  
