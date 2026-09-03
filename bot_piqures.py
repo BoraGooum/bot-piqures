@@ -100,8 +100,13 @@ async def supprimer_silencieux(message):
 # --- Menu du bas, toujours visible ---------------------------------------
 
 async def afficher_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
     reply_markup = ReplyKeyboardMarkup(MENU_PRINCIPAL, resize_keyboard=True)
-    await update.message.reply_text("Menu prêt ⬇️", reply_markup=reply_markup)
+    message_bot = await context.bot.send_message(
+        chat_id=chat_id, text="Menu prêt ⬇️", reply_markup=reply_markup
+    )
+    await supprimer_silencieux(update.message)
+    await supprimer_silencieux(message_bot)
 
 
 # --- Piqûre 1 à 4 : uniquement le résultat reste visible ------------------
@@ -113,7 +118,11 @@ async def piqure_rapide(update: Update, context: ContextTypes.DEFAULT_TYPE, text
     chat_id = update.effective_chat.id
 
     await supprimer_silencieux(update.message)
-    await context.bot.send_message(chat_id=chat_id, text=resultat)
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=resultat,
+        reply_markup=ReplyKeyboardMarkup(MENU_PRINCIPAL, resize_keyboard=True),
+    )
 
 
 # --- Perso : nombre puis saisie texte de l'heure/minute -------------------
@@ -194,7 +203,8 @@ async def gerer_texte(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await perso_start(update, context)
         return
 
-    await afficher_menu(update, context)
+    # Tout autre message (discussion normale du groupe) est ignoré
+    return
 
 
 # --- Lancement -----------------------------------------------------------
